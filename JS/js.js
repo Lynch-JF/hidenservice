@@ -1,25 +1,18 @@
 // ======================
-// API SheetBest — TICKETS
+// API BACKEND — Railway (Auth)
 // ======================
-const API_URL = "https://api.sheetbest.com/sheets/a50a59f4-402a-4937-a0fc-e20789380908";
+const API_BASE = "https://gm-tickets-backend-production.up.railway.app/api";
 
 // ======================
-// API SheetBest — USUARIOS
+// API SheetBest — TICKETS (aún no migrado)
 // ======================
-const USERS_SHEET_API = "https://api.sheetbest.com/sheets/6784d1e5-1e26-4605-9c19-329eb2b6ea12";
+const API_URL = "https://api.sheetbest.com/sheets/a50a59f4-402a-4937-a0fc-e20789380908";
 
 // ======================
 // CLOUDINARY CONFIG
 // ======================
 const CLOUDINARY_CLOUD_NAME    = "dy50psi1g";
 const CLOUDINARY_UPLOAD_PRESET = "tickets_preset";
-
-// ======================
-// CACHÉ DE USUARIOS
-// ======================
-const CACHE_KEY    = "tickets_users_cache";
-const CACHE_TS_KEY = "tickets_users_cache_ts";
-const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutos
 
 // Rutas por rol
 const ROUTES = {
@@ -49,47 +42,7 @@ const ANALISTAS_TESORERIA = {
 const TECNICOS_DISPONIBLES = ["Sin asignar", "Juan", "Joel", "Yanna", "Xavier"];
 
 // ======================
-// SHA-256 (Web Crypto API)
-// ======================
-async function sha256(text) {
-  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
-
-// ======================
-// CACHÉ — helpers
-// ======================
-function getCachedUsers() {
-  try {
-    const ts = parseInt(localStorage.getItem(CACHE_TS_KEY) || "0", 10);
-    if (Date.now() - ts > CACHE_TTL_MS) return null;
-    const raw = localStorage.getItem(CACHE_KEY);
-    return raw ? JSON.parse(raw) : null;
-  } catch {
-    return null;
-  }
-}
-
-function setCachedUsers(users) {
-  try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(users));
-    localStorage.setItem(CACHE_TS_KEY, Date.now().toString());
-  } catch (e) {
-    console.warn("No se pudo guardar caché:", e);
-  }
-}
-
-async function fetchUsersFromSheet() {
-  const res = await fetch(USERS_SHEET_API);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const data = await res.json();
-  const users = Array.isArray(data) ? data : [];
-  setCachedUsers(users);
-  return users;
-}
-
-// ======================
-// LOGIN — con protección anti-doble clic
+// LOGIN — vía backend Railway (JWT)
 // ======================
 let _loginInProgress = false;
 
@@ -116,46 +69,24 @@ async function login() {
   if (btnLogin) { btnLogin.disabled = true; btnLogin.textContent = "Verificando..."; }
 
   try {
-    const hashIngresado = await sha256(passInput);
+    const res = await fetch(`${API_BASE}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nombre_usuario: userInput, contrasena: passInput })
+    });
 
-    let users     = getCachedUsers();
-    let usedCache = !!users;
-    if (!users) users = await fetchUsersFromSheet();
+    const data = await res.json();
 
-    let encontrado = _findUser(users, userInput, hashIngresado);
-
-    // Si no encontrado en caché, refrescar una vez
-    if (!encontrado && usedCache) {
-      console.log("[Auth] No encontrado en caché, refrescando...");
-      users      = await fetchUsersFromSheet();
-      encontrado = _findUser(users, userInput, hashIngresado);
+    if (!res.ok) {
+      _setLoginError(errorEl, data.error || "Usuario o contraseña incorrectos.");
+      return;
     }
 
-    if (encontrado) {
-      _guardarSesion(encontrado);
-      window.location.href = ROUTES[localStorage.getItem("rol")] || "Dashboard.html";
-    } else {
-      _setLoginError(errorEl, "Usuario o contraseña incorrectos.");
-    }
+    _guardarSesion(data);
+    window.location.href = ROUTES[data.user.rol] || "Dashboard.html";
 
   } catch (err) {
     console.error("[Auth] Error en login:", err);
-
-    // Fallback: caché de emergencia
-    const emergencia = getCachedUsers();
-    if (emergencia) {
-      console.warn("[Auth] Sin red — usando caché de emergencia");
-      try {
-        const hashIngresado = await sha256(passInput);
-        const encontrado    = _findUser(emergencia, userInput, hashIngresado);
-        if (encontrado) {
-          _guardarSesion(encontrado);
-          window.location.href = ROUTES[localStorage.getItem("rol")] || "Dashboard.html";
-          return;
-        }
-      } catch { /* ignorar */ }
-    }
-
     _setLoginError(errorEl, "Error de conexión. Inténtalo de nuevo.");
 
   } finally {
@@ -165,20 +96,13 @@ async function login() {
 }
 
 // ─── Helpers internos de login ───
-function _findUser(users, username, hash) {
-  return users.find(u =>
-    (u.NombreUsuario || "").toLowerCase() === username.toLowerCase() &&
-    (u.Contraseña    || "") === hash
-  ) || null;
-}
-
-function _guardarSesion(usuario) {
-  let rol = usuario.Rol;
-  if ((usuario.NombreUsuario || "").toLowerCase() === "juan") rol = "superadmin";
-  localStorage.setItem("usuario",        usuario.NombreUsuario);
-  localStorage.setItem("rol",            rol);
-  localStorage.setItem("depto",          usuario.Departamento   || "");
-  localStorage.setItem("nombreCompleto", usuario.NombreCompleto || usuario.NombreUsuario);
+function _guardarSesion(data) {
+  const { token, user } = data;
+  localStorage.setItem("gmt_token",      token);
+  localStorage.setItem("usuario",        user.nombre_usuario);
+  localStorage.setItem("rol",            user.rol);
+  localStorage.setItem("depto",          user.departamento || "");
+  localStorage.setItem("nombreCompleto", user.nombre_completo || user.nombre_usuario);
 }
 
 function _setLoginError(el, msg) {
@@ -195,7 +119,7 @@ function _setLoginError(el, msg) {
 // LOGOUT
 // ======================
 function logout() {
-  ["usuario", "rol", "depto", "nombreCompleto"].forEach(k => localStorage.removeItem(k));
+  ["usuario", "rol", "depto", "nombreCompleto", "gmt_token"].forEach(k => localStorage.removeItem(k));
   window.location.href = "index.html";
 }
 
