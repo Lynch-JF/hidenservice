@@ -69,17 +69,30 @@ async function login() {
   if (btnLogin) { btnLogin.disabled = true; btnLogin.textContent = "Verificando..."; }
 
   try {
-    const res = await fetch(`${API_BASE}/auth/login`, {
+    // 1) Intento normal (bcrypt) — funciona para usuarios ya migrados
+    let res  = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nombre_usuario: userInput, contrasena: passInput })
     });
+    let data = await res.json();
 
-    const data = await res.json();
-
+    // 2) Si falla, probamos login-legacy (usuarios aún con hash SHA-256 viejo).
+    //    El backend migra el hash a bcrypt automáticamente si coincide.
     if (!res.ok) {
-      _setLoginError(errorEl, data.error || "Usuario o contraseña incorrectos.");
-      return;
+      const hashLegacy = await sha256(passInput);
+      const resLegacy  = await fetch(`${API_BASE}/auth/login-legacy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nombre_usuario: userInput, sha256_hash: hashLegacy })
+      });
+      const dataLegacy = await resLegacy.json();
+
+      if (!resLegacy.ok) {
+        _setLoginError(errorEl, dataLegacy.error || data.error || "Usuario o contraseña incorrectos.");
+        return;
+      }
+      res = resLegacy; data = dataLegacy;
     }
 
     _guardarSesion(data);
@@ -93,6 +106,12 @@ async function login() {
     _loginInProgress = false;
     if (btnLogin) { btnLogin.disabled = false; btnLogin.textContent = "Ingresar"; }
   }
+}
+
+// ── SHA-256 (Web Crypto API) — solo para el fallback login-legacy ──
+async function sha256(text) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
 // ─── Helpers internos de login ───
@@ -138,7 +157,9 @@ function protegerPaginaRoles(...rolesPermitidos) {
 // ENTER en campos de login
 // ======================
 document.addEventListener("DOMContentLoaded", () => {
-  ["password", "contrasena", "username", "usuario"].forEach(id => {
+  // "password" queda fuera: index.html ya tiene onkeydown inline para ese campo.
+  // Si se agregan ambos, Enter dispara login() dos veces.
+  ["contrasena", "username", "usuario"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener("keydown", e => { if (e.key === "Enter") login(); });
   });
