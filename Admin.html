@@ -1069,6 +1069,7 @@ body.light-theme .nexo-input-area{background:var(--s1)}
 // ════════════════════════════════════════════════════════
 // CONFIG & CONSTANTS
 // ════════════════════════════════════════════════════════
+const API_BASE = "https://gm-tickets-backend-production.up.railway.app/api";
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 const DEP_COLORS = ["#6366f1","#22d3ee","#10b981","#f59e0b","#f43f5e","#a78bfa","#34d399","#fbbf24","#60a5fa","#fb7185","#818cf8","#4ade80","#facc15","#38bdf8","#e879f9"];
 const STORAGE_KEY_CIERRES = "gmtickets_admin_cierres_mensuales";
@@ -1077,24 +1078,20 @@ const NOMBRES_COMPLETOS = { "Juan":"Juan Francisco Jiménez","Joel":"Joel Holgui
 const PALABRAS_CRITICO = ["urgente","urgentes","caído","caida","no funciona","bloqueado","bloqueada","crítico","crítica","apagado","apagada","no enciende","perdida de datos","no accede","virus","hackeado","sin internet","sin sistema","caída total","fuera de servicio","completamente","no hay sistema"];
 const PALABRAS_ALTO    = ["lento","lenta","error","falla","problema","no responde","reinicia","reiniciando","se traba","se cuelga","pantalla azul","no abre","no carga","intermitente","tarda","muy despacio"];
 
-// Cache
-const CACHE_KEY_DATA = "gmt_admin_cache_data";
-const CACHE_KEY_TS   = "gmt_admin_cache_ts";
-const CACHE_TTL      = 5 * 60 * 1000; // 5 min
+// ════════════════════════════════════════════════════════
+// AUTH HELPERS
+// ════════════════════════════════════════════════════════
+function getToken(){ return localStorage.getItem("gmt_token") || ""; }
+function authHeaders(){ return { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() }; }
 
-function getCached() {
-  try {
-    const ts = parseInt(localStorage.getItem(CACHE_KEY_TS)||"0");
-    if (Date.now()-ts > CACHE_TTL) return null;
-    const raw = localStorage.getItem(CACHE_KEY_DATA);
-    return raw ? JSON.parse(raw) : null;
-  } catch { return null; }
-}
-function setCache(data) {
-  try { localStorage.setItem(CACHE_KEY_DATA,JSON.stringify(data)); localStorage.setItem(CACHE_KEY_TS,String(Date.now())); } catch {}
-}
-function invalidarCache() {
-  localStorage.removeItem(CACHE_KEY_DATA); localStorage.removeItem(CACHE_KEY_TS);
+async function apiFetch(path, opts = {}){
+  const res = await fetch(API_BASE + path, { ...opts, headers: { ...authHeaders(), ...(opts.headers || {}) } });
+  if(res.status === 401){
+    showToast("Sesión expirada, vuelve a iniciar sesión","err");
+    setTimeout(logout, 1500);
+    throw new Error("Unauthorized");
+  }
+  return res;
 }
 
 // State
@@ -1103,15 +1100,15 @@ let repAllTickets = [], repMesActual = new Date().getMonth(), repAnioActual = ne
 let repBarChart = null, repInited = false;
 let urgFilterMap = { urgFilterAsignados:"todos", urgFilterPend:"todos", urgFilterProc:"todos" };
 const adminActual = localStorage.getItem("usuario") || "";
-let sheetUsers = [], editingRowNum = null, hashDebounce = null;
-const API_URL_USERS = "https://api.sheetbest.com/sheets/6784d1e5-1e26-4605-9c19-329eb2b6ea12";
+let sheetUsers = [], editingRowNum = null;
 
 // ════════════════════════════════════════════════════════
 // INIT SESSION
 // ════════════════════════════════════════════════════════
 (function(){
   const rol = localStorage.getItem("rol");
-  if (rol !== "admin" && rol !== "superadmin") { window.location.href = "index.html"; return; }
+  const token = getToken();
+  if ((rol !== "admin" && rol !== "superadmin") || !token) { window.location.href = "index.html"; return; }
   const usuario = localStorage.getItem("usuario")||"Admin";
   const nombreCompleto = localStorage.getItem("nombreCompleto")||usuario;
   const depto = localStorage.getItem("depto")||"";
@@ -1153,29 +1150,29 @@ function toggleSidebar() {
 }
 
 // ════════════════════════════════════════════════════════
-// CLOCK / CACHE STATUS
+// CLOCK / SYNC STATUS
 // ════════════════════════════════════════════════════════
 function updateClock() { document.getElementById("nowTime").textContent = new Date().toLocaleString("es-DO"); }
 updateClock(); setInterval(updateClock, 1000);
 
+let lastSyncTs = 0;
 function actualizarCacheBadge() {
-  const ts = parseInt(localStorage.getItem(CACHE_KEY_TS)||"0");
   const badge = document.getElementById("cacheBadge");
   const statusEl = document.getElementById("cacheStatus");
   const cfgEl = document.getElementById("cfg-cache-status");
-  if (!ts) { if(badge)badge.className="cache-badge"; if(statusEl)statusEl.textContent="Sin caché"; if(cfgEl)cfgEl.textContent="Sin caché"; return; }
-  const mins = Math.round((Date.now()-ts)/60000);
+  if (!lastSyncTs) { if(badge)badge.className="cache-badge"; if(statusEl)statusEl.textContent="Sin datos"; if(cfgEl)cfgEl.textContent="Sin datos"; return; }
+  const mins = Math.round((Date.now()-lastSyncTs)/60000);
   const txt = mins <= 0 ? "Recién" : `hace ${mins}m`;
   const fresh = mins < 2;
   if(badge) badge.className = "cache-badge"+(fresh?" fresh":"");
   if(statusEl) statusEl.textContent = txt;
-  if(cfgEl) cfgEl.textContent = mins <= 0 ? "Recién cargado" : `Cache de hace ${mins} min`;
+  if(cfgEl) cfgEl.textContent = mins <= 0 ? "Recién sincronizado" : `Sincronizado hace ${mins} min`;
 }
 setInterval(actualizarCacheBadge, 30000);
 
 function limpiarCacheManual() {
-  if (!confirm("¿Limpiar el caché local?")) return;
-  invalidarCache(); showToast("Caché limpiado ✓","ok"); recargarTodo(true);
+  recargarTodo(true);
+  showToast("Datos recargados ✓","ok");
 }
 
 // ════════════════════════════════════════════════════════
@@ -1195,29 +1192,29 @@ function aplicarAutorefresh() {
 document.addEventListener("visibilitychange",()=>{ if(!document.hidden) recargarTodo(false); });
 
 // ════════════════════════════════════════════════════════
-// CARGAR TICKETS — cache inteligente 5 min
+// CARGAR TICKETS — backend propio (Railway + Supabase, JWT)
 // ════════════════════════════════════════════════════════
 async function recargarTodo(forceRefresh=false) {
   animateLoad("loadBarAsi"); animateLoad("loadBarPend"); animateLoad("loadBarProc");
   try {
-    if (!forceRefresh) {
-      const cached = getCached();
-      if (cached && cached.length) {
-        allTickets = cached;
-        renderTodo();
-        actualizarCacheBadge();
-        return;
-      }
-    }
-    const r = await fetch(API_URL);
+    const r = await apiFetch("/tickets");
+    if(!r.ok) throw new Error("HTTP "+r.status);
     const data = await r.json();
-    allTickets = Array.isArray(data) ? data : [];
-    setCache(allTickets);
+    allTickets = (Array.isArray(data) ? data : []).map(t => ({
+      ...t,
+      fecha:          t.creado_en ? new Date(t.creado_en).toLocaleDateString("es-DO") : (t.fecha||""),
+      fecha_recibido: t.fecha_recibido ? new Date(t.fecha_recibido).toLocaleDateString("es-DO") : "",
+      fecha_resuelto: t.fecha_resuelto ? new Date(t.fecha_resuelto).toLocaleDateString("es-DO") : "",
+      recibido:       t.recibido === true || t.recibido === "si" ? "si" : "",
+    }));
     renderTodo();
+    lastSyncTs = Date.now();
     const el=document.getElementById("cfg-last-sync"); if(el) el.textContent=new Date().toLocaleTimeString("es-DO");
     const et=document.getElementById("cfg-total-tickets"); if(et) et.textContent=allTickets.length;
     actualizarCacheBadge();
-  } catch { showToast("Error al cargar tickets","err"); }
+  } catch(e) {
+    if(e.message !== "Unauthorized") showToast("Error al cargar tickets","err");
+  }
   finally { fillLoadBar("loadBarAsi"); fillLoadBar("loadBarPend"); fillLoadBar("loadBarProc"); }
 }
 
@@ -1256,7 +1253,10 @@ function switchView(v){
 function calcUrgencia(t){
   const texto=((t.titulo||"")+" "+(t.descripcion||"")).toLowerCase();
   let diasDesde=0;
-  try{const p=(t.fecha||"").split(",")[0].trim().split("/");if(p.length===3){const d=new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0]));diasDesde=Math.floor((new Date()-d)/(1000*60*60*24));}}catch{}
+  try{
+    if(t.creado_en){ const d=new Date(t.creado_en); if(!isNaN(d)) diasDesde=Math.floor((new Date()-d)/(1000*60*60*24)); }
+    else{ const p=(t.fecha||"").split(",")[0].trim().split("/");if(p.length===3){const d=new Date(parseInt(p[2]),parseInt(p[1])-1,parseInt(p[0]));diasDesde=Math.floor((new Date()-d)/(1000*60*60*24));} }
+  }catch{}
   const esCritico=PALABRAS_CRITICO.some(p=>texto.includes(p));
   const esAlto=PALABRAS_ALTO.some(p=>texto.includes(p));
   const pendLarga=t.estado==="Pendiente"&&diasDesde>=3;
@@ -1424,13 +1424,13 @@ function buildCard(t,opciones={}){
   if(t.estado==="Resuelto"&&t.resolucion)
     resH=`<div class="t-resolution">✓ ${t.resolucion}<br><small style="opacity:.7">Participantes: ${t.participantes||"N/A"} — ${t.fecha_resuelto||""}</small></div>`;
   const recibidoBadge=t.recibido==="si"?`<span class="b-received">📩 Recibido · ${(t.fecha_recibido||"").split(",")[0]}</span>`:"";
-  const btnRecibir=(esMio&&t.recibido!=="si"&&t.estado!=="Resuelto")?`<button class="btn-receive" onclick="marcarRecibido('${encodeURIComponent(t.id)}')">📩 Marcar recibido</button>`:"";
+  const btnRecibir=(esMio&&t.recibido!=="si"&&t.estado!=="Resuelto")?`<button class="btn-receive" onclick="marcarRecibido(${t.id})">📩 Marcar recibido</button>`:"";
   let botonesAccion="";
   if(esAdmin&&t.estado!=="Resuelto"){
-    if(t.estado==="Pendiente") botonesAccion=`<button class="btn-proc" onclick="cambiarEstadoAdmin('${encodeURIComponent(t.id)}','En Proceso')">⚙ En Proceso</button><button class="btn-resolve" onclick="abrirModalResolucion('${encodeURIComponent(t.id)}')">✓ Resuelto</button>`;
-    else if(t.estado==="En Proceso") botonesAccion=`<button class="btn-resolve" onclick="abrirModalResolucion('${encodeURIComponent(t.id)}')">✓ Resuelto</button>`;
+    if(t.estado==="Pendiente") botonesAccion=`<button class="btn-proc" onclick="cambiarEstadoAdmin(${t.id},'En Proceso')">⚙ En Proceso</button><button class="btn-resolve" onclick="abrirModalResolucion(${t.id})">✓ Resuelto</button>`;
+    else if(t.estado==="En Proceso") botonesAccion=`<button class="btn-resolve" onclick="abrirModalResolucion(${t.id})">✓ Resuelto</button>`;
   }
-  const btnReasignar=(esAdmin&&t.estado!=="Resuelto")?`<button class="btn-reassign" onclick="abrirReasignarAdmin('${encodeURIComponent(t.id)}')">🔁 Reasignar</button>`:"";
+  const btnReasignar=(esAdmin&&t.estado!=="Resuelto")?`<button class="btn-reassign" onclick="abrirReasignarAdmin(${t.id})">🔁 Reasignar</button>`:"";
   const div=document.createElement("div");
   div.className="t-card";
   if(t.fecha_resuelto)div.dataset.fechaResuelto=t.fecha_resuelto;
@@ -1448,20 +1448,18 @@ function buildCard(t,opciones={}){
 }
 
 // ════════════════════════════════════════════════════════
-// ACCIONES TICKETS (con invalidarCache)
+// ACCIONES TICKETS
 // ════════════════════════════════════════════════════════
-async function marcarRecibido(idEnc){
-  const id=decodeURIComponent(idEnc);
+async function marcarRecibido(id){
   try{
-    const r=await fetch(`${API_URL}/id/${encodeURIComponent(id)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({recibido:"si",fecha_recibido:new Date().toLocaleString("es-DO")})});
+    const r=await apiFetch(`/tickets/${id}`,{method:"PATCH",body:JSON.stringify({recibido:true})});
     if(!r.ok)throw new Error("HTTP "+r.status);
     showToast("Ticket marcado como recibido ✓","ok");
-    invalidarCache(); await recargarTodo(true);
+    await recargarTodo(true);
   }catch{showToast("Error al marcar recibido","err");}
 }
 function cambiarEstadoAdmin(id,nuevoEstado){
-  invalidarCache();
-  fetch(`${API_URL}/id/${encodeURIComponent(decodeURIComponent(id))}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({estado:nuevoEstado})})
+  apiFetch(`/tickets/${id}`,{method:"PATCH",body:JSON.stringify({estado:nuevoEstado})})
   .then(r=>{if(!r.ok)throw new Error("HTTP "+r.status);return r.json();})
   .then(()=>{showToast(`Estado → "${nuevoEstado}"`,"ok");recargarTodo(true);})
   .catch(()=>showToast("Error al cambiar estado","err"));
@@ -1469,7 +1467,7 @@ function cambiarEstadoAdmin(id,nuevoEstado){
 
 let _adminTicketResolverId=null;
 function abrirModalResolucion(id){
-  _adminTicketResolverId=decodeURIComponent(id);
+  _adminTicketResolverId=id;
   document.getElementById("resueltoModal").classList.add("open");
 }
 function cerrarModalRes(){
@@ -1483,9 +1481,8 @@ function guardarResolucion(){
   const participantes=Array.from(checks).map(c=>c.value).join(", ");
   const detalle=document.getElementById("detalleResolucion").value.trim();
   if(!detalle){showToast("⚠ Escribe cómo se resolvió","err");return;}
-  invalidarCache();
-  fetch(`${API_URL}/id/${encodeURIComponent(_adminTicketResolverId)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({estado:"Resuelto",participantes,resolucion:detalle,fecha_resuelto:new Date().toLocaleString("es-DO")})})
-  .then(r=>r.json())
+  apiFetch(`/tickets/${_adminTicketResolverId}`,{method:"PATCH",body:JSON.stringify({estado:"Resuelto",participantes,resolucion:detalle})})
+  .then(r=>{if(!r.ok)throw new Error();return r.json();})
   .then(()=>{showToast("Ticket resuelto","ok");cerrarModalRes();recargarTodo(true);})
   .catch(()=>showToast("Error al resolver","err"));
 }
@@ -1493,7 +1490,7 @@ function guardarResolucion(){
 let _adminTicketReasignarId=null;
 const _tecnicosAdmin=["Sin asignar","Juan","Joel","Yanna","Xavier"];
 function abrirReasignarAdmin(id){
-  _adminTicketReasignarId=decodeURIComponent(id);
+  _adminTicketReasignarId=id;
   const sel=document.getElementById("selectTecnico");
   sel.innerHTML=_tecnicosAdmin.map(t=>`<option value="${t}">${t==="Sin asignar"?"⚠ Sin asignar":"👤 "+(NOMBRES_COMPLETOS[t]||t)}</option>`).join("");
   document.getElementById("reasignarModal").classList.add("open");
@@ -1502,96 +1499,102 @@ function cerrarReasignar(){document.getElementById("reasignarModal").classList.r
 function guardarReasignacion(){
   const nuevo=document.getElementById("selectTecnico").value;
   if(!_adminTicketReasignarId)return;
-  invalidarCache();
-  fetch(`${API_URL}/id/${encodeURIComponent(_adminTicketReasignarId)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({asignado:nuevo})})
+  apiFetch(`/tickets/${_adminTicketReasignarId}`,{method:"PATCH",body:JSON.stringify({asignado:nuevo})})
   .then(r=>{if(!r.ok)throw new Error();return r.json();})
   .then(()=>{showToast(`Reasignado a ${NOMBRES_COMPLETOS[nuevo]||nuevo}`,"ok");cerrarReasignar();recargarTodo(true);})
   .catch(()=>showToast("Error al reasignar","err"));
 }
 
 // ════════════════════════════════════════════════════════
-// USUARIOS
+// USUARIOS — backend propio (bcrypt server-side, sin SHA-256 en cliente)
 // ════════════════════════════════════════════════════════
-async function sha256(text){
-  const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
-}
 async function cargarUsuariosSheet(){
   const tbody=document.getElementById("usersBody");
   tbody.innerHTML=`<tr class="loading-row"><td colspan="6"><span class="spinner"></span>Cargando…</td></tr>`;
-  try{const data=await fetch(API_URL_USERS).then(r=>r.json());sheetUsers=Array.isArray(data)?data:[];filtrarTablaUsuarios();actualizarStatsPills();}
-  catch{document.getElementById("usersBody").innerHTML=`<tr class="loading-row"><td colspan="6" style="color:var(--rose)">⚠ Error al cargar usuarios.</td></tr>`;}
+  try{
+    const r = await apiFetch("/usuarios");
+    if(!r.ok) throw new Error();
+    sheetUsers = await r.json();
+    filtrarTablaUsuarios();
+    actualizarStatsPills();
+  }catch{
+    document.getElementById("usersBody").innerHTML=`<tr class="loading-row"><td colspan="6" style="color:var(--rose)">⚠ Error al cargar usuarios.</td></tr>`;
+  }
 }
 function filtrarTablaUsuarios(){
   const s=(document.getElementById("userSearch")?.value||"").toLowerCase(),tbody=document.getElementById("usersBody");
-  const f=sheetUsers.filter(u=>(u.NombreUsuario||"").toLowerCase().includes(s)||(u.Rol||"").toLowerCase().includes(s)||(u.Departamento||"").toLowerCase().includes(s)||(u.NombreCompleto||"").toLowerCase().includes(s));
+  const f=sheetUsers.filter(u=>(u.nombre_usuario||"").toLowerCase().includes(s)||(u.rol||"").toLowerCase().includes(s)||(u.departamento||"").toLowerCase().includes(s)||(u.nombre_completo||"").toLowerCase().includes(s));
   if(!f.length){tbody.innerHTML=`<tr class="loading-row"><td colspan="6" style="color:var(--t2)">Sin usuarios${s?" con ese filtro":""}.</td></tr>`;return;}
   tbody.innerHTML=f.map(u=>{
-    const rol=(u.Rol||"usuario").toLowerCase(),hash=(u.Contraseña||"").substring(0,20)+"…",ri=sheetUsers.indexOf(u);
-    return`<tr><td><strong style="color:var(--t0)">${u.NombreUsuario||"—"}</strong></td><td>${u.NombreCompleto||'<em style="color:var(--t3)">Sin nombre</em>'}</td><td class="hash-cell" title="${u.Contraseña||""}">${hash}</td><td><span class="role-tag rt-${rol}">${rol}</span></td><td class="depto-cell">${u.Departamento||"—"}</td><td><div class="actions-row"><button class="btn-xs-edit" onclick="abrirEditarUsuario(${ri})">✏ Editar</button><button class="btn-xs-del" onclick="eliminarUsuarioSheet(${ri})">✕</button></div></td></tr>`;
+    const rol=(u.rol||"usuario").toLowerCase();
+    return`<tr><td><strong style="color:var(--t0)">${u.nombre_usuario||"—"}</strong></td><td>${u.nombre_completo||'<em style="color:var(--t3)">Sin nombre</em>'}</td><td class="hash-cell">••••••••</td><td><span class="role-tag rt-${rol}">${rol}</span></td><td class="depto-cell">${u.departamento||"—"}</td><td><div class="actions-row"><button class="btn-xs-edit" onclick="abrirEditarUsuario(${u.id})">✏ Editar</button><button class="btn-xs-del" onclick="eliminarUsuarioSheet(${u.id},'${(u.nombre_usuario||"").replace(/'/g,"\\'")}')">✕</button></div></td></tr>`;
   }).join("");
 }
 function actualizarStatsPills(){
+  const cnt=r=>sheetUsers.filter(u=>u.rol===r).length;
   document.getElementById("stat-total").textContent=sheetUsers.length;
-  document.getElementById("stat-tech").textContent=sheetUsers.filter(u=>u.Rol==="tecnico").length;
-  document.getElementById("stat-user").textContent=sheetUsers.filter(u=>u.Rol==="usuario").length;
-  document.getElementById("stat-adm").textContent=sheetUsers.filter(u=>u.Rol==="admin"||u.Rol==="superadmin").length;
+  document.getElementById("stat-tech").textContent=cnt("tecnico");
+  document.getElementById("stat-user").textContent=cnt("usuario");
+  document.getElementById("stat-adm").textContent=cnt("admin")+cnt("superadmin");
 }
 function previewHash(){
-  clearTimeout(hashDebounce);
   const el=document.getElementById("hashPreview"),val=document.getElementById("fPassword").value;
-  if(!val){el.textContent="El hash aparecerá aquí…";el.className="field-hint";return;}
-  hashDebounce=setTimeout(async()=>{const h=await sha256(val);el.textContent=h.substring(0,32)+"…";el.className="field-hint hashed";},300);
+  el.textContent = val ? "✓ Se cifrará con bcrypt al guardar" : "La contraseña se cifrará en el servidor…";
+  el.className = val ? "field-hint hashed" : "field-hint";
 }
 function abrirCrearUsuario(){
   editingRowNum=null;
   document.getElementById("modalTitleUser").textContent="Nuevo Usuario";
-  document.getElementById("modalSubUser").textContent="La contraseña se hashea con SHA-256.";
+  document.getElementById("modalSubUser").textContent="La contraseña se cifra con bcrypt en el servidor.";
   document.getElementById("passLabel").textContent="Contraseña";
   ["fUsername","fPassword","fNombreCompleto"].forEach(id=>document.getElementById(id).value="");
   document.getElementById("fRol").value="usuario";document.getElementById("fDepto").value="";
-  document.getElementById("hashPreview").textContent="El hash aparecerá aquí…";
+  document.getElementById("hashPreview").textContent="La contraseña se cifrará en el servidor…";
   document.getElementById("hashPreview").className="field-hint";
   document.getElementById("userModal").classList.add("open");
 }
-function abrirEditarUsuario(idx){
-  const u=sheetUsers[idx];if(!u)return;editingRowNum=idx;
+function abrirEditarUsuario(id){
+  const u=sheetUsers.find(x=>x.id===id);if(!u)return;editingRowNum=id;
   document.getElementById("modalTitleUser").textContent="Editar Usuario";
   document.getElementById("modalSubUser").textContent="Deja la contraseña en blanco para no cambiarla.";
   document.getElementById("passLabel").textContent="Nueva contraseña (opcional)";
-  document.getElementById("fUsername").value=u.NombreUsuario||"";
-  document.getElementById("fNombreCompleto").value=u.NombreCompleto||"";
+  document.getElementById("fUsername").value=u.nombre_usuario||"";
+  document.getElementById("fNombreCompleto").value=u.nombre_completo||"";
   document.getElementById("fPassword").value="";
-  document.getElementById("fRol").value=u.Rol||"usuario";
-  document.getElementById("fDepto").value=u.Departamento||"";
-  document.getElementById("hashPreview").textContent="Hash actual: "+(u.Contraseña||"").substring(0,24)+"…";
+  document.getElementById("fRol").value=u.rol||"usuario";
+  document.getElementById("fDepto").value=u.departamento||"";
+  document.getElementById("hashPreview").textContent="Dejar en blanco para no cambiar la contraseña";
   document.getElementById("hashPreview").className="field-hint hashed";
   document.getElementById("userModal").classList.add("open");
 }
 async function guardarUsuarioSheet(){
-  const username=document.getElementById("fUsername").value.trim();
-  const nombreCompleto=document.getElementById("fNombreCompleto").value.trim();
-  const password=document.getElementById("fPassword").value.trim();
-  const rol=document.getElementById("fRol").value,depto=document.getElementById("fDepto").value;
+  const nombre_usuario=document.getElementById("fUsername").value.trim();
+  const nombre_completo=document.getElementById("fNombreCompleto").value.trim();
+  const contrasena=document.getElementById("fPassword").value.trim();
+  const rol=document.getElementById("fRol").value,departamento=document.getElementById("fDepto").value;
   const btn=document.getElementById("btnGuardarUser");
-  if(!username){showToast("El nombre es obligatorio","err");return;}
-  if(editingRowNum===null&&!password){showToast("La contraseña es obligatoria","err");return;}
-  if(editingRowNum===null){const existe=sheetUsers.some(u=>(u.NombreUsuario||"").toLowerCase()===username.toLowerCase());if(existe){showToast("El usuario ya existe","err");return;}}
+  if(!nombre_usuario){showToast("El nombre es obligatorio","err");return;}
+  if(editingRowNum===null&&!contrasena){showToast("La contraseña es obligatoria","err");return;}
   btn.disabled=true;btn.textContent="Guardando…";
   try{
-    const hf=password?await sha256(password):(sheetUsers[editingRowNum]?.Contraseña||"");
-    const payload={NombreUsuario:username,NombreCompleto:nombreCompleto||username,Contraseña:hf,Rol:rol,Departamento:depto};
-    if(editingRowNum===null){const r=await fetch(API_URL_USERS,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw new Error("HTTP "+r.status);showToast("Usuario creado","ok");}
-    else{const enc=encodeURIComponent(sheetUsers[editingRowNum].NombreUsuario);const r=await fetch(`${API_URL_USERS}/NombreUsuario/${enc}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});if(!r.ok)throw new Error("HTTP "+r.status);showToast("Usuario actualizado","ok");}
+    const payload={ nombre_usuario, nombre_completo: nombre_completo||nombre_usuario, rol, departamento };
+    if(contrasena) payload.contrasena = contrasena;
+    const r = editingRowNum===null
+      ? await apiFetch("/usuarios", {method:"POST", body: JSON.stringify(payload)})
+      : await apiFetch(`/usuarios/${editingRowNum}`, {method:"PATCH", body: JSON.stringify(payload)});
+    if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||"HTTP "+r.status); }
+    showToast(editingRowNum===null?"Usuario creado":"Usuario actualizado","ok");
     cerrarModalUser();await cargarUsuariosSheet();
   }catch(err){showToast("Error: "+err.message,"err");}
   finally{btn.disabled=false;btn.textContent="Guardar";}
 }
-async function eliminarUsuarioSheet(idx){
-  const u=sheetUsers[idx];if(!u)return;
-  if(!confirm(`¿Eliminar al usuario "${u.NombreUsuario}"?`))return;
-  try{const r=await fetch(`${API_URL_USERS}/NombreUsuario/${encodeURIComponent(u.NombreUsuario)}`,{method:"DELETE"});if(!r.ok)throw new Error("HTTP "+r.status);showToast("Usuario eliminado","ok");await cargarUsuariosSheet();}
-  catch(err){showToast("Error: "+err.message,"err");}
+async function eliminarUsuarioSheet(id, nombre){
+  if(!confirm(`¿Desactivar al usuario "${nombre}"?`))return;
+  try{
+    const r = await apiFetch(`/usuarios/${id}`, {method:"DELETE"});
+    if(!r.ok) throw new Error("HTTP "+r.status);
+    showToast("Usuario desactivado","ok"); await cargarUsuariosSheet();
+  }catch(err){ showToast("Error: "+err.message,"err"); }
 }
 function cerrarModalUser(){document.getElementById("userModal").classList.remove("open");editingRowNum=null;}
 
@@ -1605,7 +1608,11 @@ function toggleTheme(){
   document.getElementById("themeIcon").textContent=isLight?"☀️":"🌙";
   localStorage.setItem("gmtickets_theme",isLight?"light":"dark");
 }
-function logout(){ if(confirm("¿Cerrar sesión?")) window.location.href="index.html"; }
+function logout(){
+  if(!confirm("¿Cerrar sesión?")) return;
+  ["usuario","rol","depto","nombreCompleto","gmt_token"].forEach(k=>localStorage.removeItem(k));
+  window.location.href="index.html";
+}
 
 // ════════════════════════════════════════════════════════
 // TOAST
@@ -1636,7 +1643,10 @@ function parseFechaRep(f){
   if(!f)return null;
   try{const p=f.split(",")[0].trim(),parts=p.split("/");if(parts.length<3)return null;return new Date(parseInt(parts[2]),parseInt(parts[1])-1,parseInt(parts[0]));}catch{return null;}
 }
-function ticketDelMes(t,mes,anio){const f=parseFechaRep(t.fecha);if(!f)return false;return f.getMonth()===mes&&f.getFullYear()===anio;}
+function ticketDelMes(t,mes,anio){
+  if(t.creado_en){ try{ const d=new Date(t.creado_en); return d.getMonth()===mes&&d.getFullYear()===anio; }catch{return false;} }
+  const f=parseFechaRep(t.fecha);if(!f)return false;return f.getMonth()===mes&&f.getFullYear()===anio;
+}
 function renderReportes(){
   const mes=repMesActual,anio=repAnioActual,nombre=MESES[mes];
   const tickets=repAllTickets.filter(t=>ticketDelMes(t,mes,anio));
@@ -1721,7 +1731,7 @@ function repRenderBarChart(deptos,total){
   repBarChart=new Chart(c,{type:"bar",data:{labels,datasets:[{data:vals,backgroundColor:colors.map(c=>c+"BB"),borderColor:colors,borderWidth:1.5,borderRadius:6,borderSkipped:false}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:"#111120",borderColor:"rgba(255,255,255,.1)",borderWidth:1,callbacks:{label:ctx=>` ${ctx.raw} tickets (${pcts[ctx.dataIndex]}%)`}}},scales:{x:{grid:{color:"rgba(255,255,255,.04)"},ticks:{color:"#636380",font:{family:"'Geist Mono',monospace",size:8}}},y:{grid:{color:"rgba(255,255,255,.04)"},ticks:{color:"#636380",font:{family:"'Geist Mono',monospace",size:8},stepSize:1},beginAtZero:true}}}});
 }
 
-// Cierres
+// Cierres (siguen locales — son snapshots de archivo, no datos vivos)
 function repGetCierresGuardados(){try{const r=localStorage.getItem(STORAGE_KEY_CIERRES);return r?JSON.parse(r):[];}catch{return[];}}
 function repSaveCierres(c){localStorage.setItem(STORAGE_KEY_CIERRES,JSON.stringify(c));}
 function repGetCierreGuardado(mes,anio){return repGetCierresGuardados().find(c=>c.mes===mes&&c.anio===anio)||null;}
@@ -1795,11 +1805,12 @@ function resetSistemaCompleto(){
 }
 
 // ════════════════════════════════════════════════════════
-// ★ NEXO IA — Asistente Analítico Admin (Claude API)
+// ★ NEXO IA — Asistente Analítico Admin
+// La llamada ya NO va directo a OpenRouter desde el navegador.
+// Pasa por el backend: POST /api/nexo/chat  { messages: [...] }
+// El backend agrega la API key server-side y responde { reply: "..." }.
+// (Si tu backend aún no tiene esta ruta, avísame y te la armo en Node/Express.)
 // ════════════════════════════════════════════════════════
-const OPENROUTER_API_KEY = "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";
-const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_MODEL   = "cohere/north-mini-code:free";
 let nexoOpen=false, nexoHistory=[], nexoTyping=false;
 
 function nexoBuildSystemPrompt(){
@@ -1904,27 +1915,25 @@ async function nexoSendMessage(){
   nexoHistory.push({role:"user",content:text});
   nexoShowTyping();
   try{
-   const response=await fetch("https://openrouter.ai/api/v1/chat/completions",{
-  method:"POST",
-  headers:{
-    "Content-Type":"application/json",
-    "Authorization":"Bearer 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",
-    "HTTP-Referer":"https://grupomichel.com",
-    "X-Title":"GM Tickets TI - Nexo Admin"
-  },
-  body:JSON.stringify({
-    model:"cohere/north-mini-code:free",
-    messages:[{role:"system",content:nexoBuildSystemPrompt()},...nexoHistory],
-    temperature:0.5,
-    max_tokens:600
-  })
-});
-    if(!response.ok){const e=await response.json().catch(()=>({}));throw new Error(e.error?e.error.message:"HTTP "+response.status);}
-    const data=await response.json();
-const botText=(data.choices&&data.choices[0]&&data.choices[0].message&&data.choices[0].message.content)||"...";
+    // La API key vive en el servidor. El backend arma el prompt final
+    // combinando nexoBuildSystemPrompt() + historial y llama a OpenRouter/Claude allí.
+    const r = await apiFetch("/nexo/chat", {
+      method: "POST",
+      body: JSON.stringify({
+        system: nexoBuildSystemPrompt(),
+        messages: nexoHistory
+      })
+    });
+    if(!r.ok){ const e=await r.json().catch(()=>({})); throw new Error(e.error||"HTTP "+r.status); }
+    const data = await r.json();
+    const botText = data.reply || "...";
     nexoHistory.push({role:"assistant",content:botText});
     nexoRemoveTyping();nexoAppendBot(botText);
-  }catch(err){nexoRemoveTyping();console.error("Nexo error:",err);nexoAppendBot("⚠️ Error al conectar con Nexo: "+err.message+".\n\nIntenta de nuevo en un momento.");}
+  }catch(err){
+    nexoRemoveTyping();
+    console.error("Nexo error:",err);
+    nexoAppendBot("⚠️ Error al conectar con Nexo: "+err.message+".\n\nIntenta de nuevo en un momento.");
+  }
   finally{nexoTyping=false;input.disabled=false;btn.disabled=false;input.focus();}
 }
 </script>
