@@ -925,7 +925,7 @@ select optgroup{background:var(--surface2);color:var(--text3);font-size:11px}
 ══════════════════════════════════════════════════════ */
 //const API_BASE = "https://gm-tickets-backend-production.up.railway.app/api";
 
-function getToken() { return localStorage.getItem("gmt_token") || ""; }
+/*function getToken() { return localStorage.getItem("gmt_token") || ""; }
 function authHeaders() {
   return { "Content-Type": "application/json", "Authorization": "Bearer " + getToken() };
 }
@@ -942,7 +942,7 @@ async function apiFetch(path, opts = {}) {
 function logout() {
   ["usuario","rol","nombreCompleto","depto","gmt_token"].forEach(k => localStorage.removeItem(k));
   window.location.href = "index.html";
-}
+}*/
 
 const OPENROUTER_API_KEY = "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";
 const OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions";
