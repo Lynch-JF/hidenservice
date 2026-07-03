@@ -1825,30 +1825,129 @@ async function eliminarUser(id, nombre){
   } catch{ showToast("Error al eliminar","error"); }
 }
 
-// ── PERFIL ──
+// ══════════════════════════════════════════════
+// CAMBIO DE CONTRASEÑA (Reemplazar función guardarPerfil en SuperAdmin.html)
+// ══════════════════════════════════════════════
+
 async function guardarPerfil(){
-  const nombre=document.getElementById("cfg-field-nombre").value.trim();
-  const pass  =document.getElementById("cfg-field-pass").value;
-  const pass2 =document.getElementById("cfg-field-pass2").value;
+  const nombre = document.getElementById("cfg-field-nombre").value.trim();
+  const pass   = document.getElementById("cfg-field-pass").value;
+  const pass2  = document.getElementById("cfg-field-pass2").value;
+
   if(!nombre){ showToast("El nombre no puede estar vacío","error"); return; }
-  if(pass && pass!==pass2){ showToast("Las contraseñas no coinciden","error"); return; }
+  
+  // Si intenta cambiar contraseña
+  if(pass || pass2){
+    if(!pass || !pass2){ showToast("Completa ambos campos de contraseña","error"); return; }
+    if(pass !== pass2){ showToast("Las contraseñas no coinciden","error"); return; }
+    if(pass.length < 3){ showToast("La contraseña debe tener al menos 3 caracteres","error"); return; }
+  }
+
   try{
-    const userId = sheetUsers.find(u=>u.nombre_usuario===MI_USUARIO)?.id;
+    // 1. Actualizar nombre
+    const userId = sheetUsers.find(u => u.nombre_usuario === MI_USUARIO)?.id;
     if(!userId) throw new Error("Usuario no encontrado");
-    const payload={ nombre_completo:nombre };
-    if(pass) payload.contrasena = pass;
-    const r = await apiFetch(`/usuarios/${userId}`, { method:"PATCH", body: JSON.stringify(payload) });
-    if(!r.ok) throw new Error();
+
+    const btn = document.querySelector(".btn-primary");
+    if(btn) btn.disabled = true;
+
+    // Actualizar nombre y rol básicos
+    const updatePayload = { nombre_completo: nombre };
+    const r1 = await apiFetch(`/usuarios/${userId}`, { method:"PATCH", body: JSON.stringify(updatePayload) });
+    if(!r1.ok) throw new Error("Error al actualizar nombre");
+
+    // 2. Si hay cambio de contraseña, usar ruta segura /auth/change-password
+    if(pass){
+      // Primero pedimos la contraseña actual
+      const modalContraActual = document.createElement("div");
+      modalContraActual.className = "modal-overlay open";
+      modalContraActual.innerHTML = `
+        <div class="modal" style="max-width:420px">
+          <div class="modal-title">Verificar contraseña actual</div>
+          <div class="modal-sub">Necesitamos tu contraseña actual para cambiarla.</div>
+          <div class="form-group">
+            <label class="form-label">Contraseña actual</label>
+            <input type="password" id="passActualInput" class="form-input" placeholder="Tu contraseña actual" autofocus/>
+          </div>
+          <div class="modal-actions">
+            <button class="btn-cancel" onclick="this.parentElement.parentElement.remove()">Cancelar</button>
+            <button class="btn-primary" onclick="confirmarCambioPass('${userId}')">Cambiar contraseña</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modalContraActual);
+      return;
+    }
+
+    // Actualizar UI
     localStorage.setItem("nombreCompleto", nombre);
-    const ini=nombre.substring(0,2).toUpperCase();
-    ["saAvatar","cfg-avatar"].forEach(id=>{ const e=document.getElementById(id); if(e) e.textContent=ini; });
-    const sn=document.getElementById("saName"); if(sn) sn.textContent=nombre;
-    const cn=document.getElementById("cfg-nombre-completo"); if(cn) cn.textContent=nombre;
-    document.getElementById("cfg-field-pass").value="";
-    document.getElementById("cfg-field-pass2").value="";
+    const ini = nombre.substring(0,2).toUpperCase();
+    ["saAvatar","cfg-avatar"].forEach(id => { const e=document.getElementById(id); if(e) e.textContent=ini; });
+    const sn = document.getElementById("saName"); if(sn) sn.textContent = nombre;
+    const cn = document.getElementById("cfg-nombre-completo"); if(cn) cn.textContent = nombre;
+
     showToast("Perfil actualizado","success");
-  } catch(err){ showToast("Error: "+err.message,"error"); }
+
+  } catch(err){
+    showToast("Error: " + err.message,"error");
+  } finally {
+    const btn = document.querySelector(".btn-primary");
+    if(btn) btn.disabled = false;
+  }
 }
+
+// Función auxiliar para confirmar cambio de contraseña
+async function confirmarCambioPass(userId){
+  const contraActual = document.getElementById("passActualInput").value;
+  const contraNew    = document.getElementById("cfg-field-pass").value;
+
+  if(!contraActual){ showToast("Ingresa tu contraseña actual","error"); return; }
+
+  try{
+    const r = await apiFetch("/auth/change-password", {
+      method: "PATCH",
+      body: JSON.stringify({
+        contrasena_actual: contraActual,
+        contrasena_nueva: contraNew
+      })
+    });
+
+    if(!r.ok){
+      const err = await r.json();
+      throw new Error(err.error || "Error al cambiar contraseña");
+    }
+
+    // Limpiar campos
+    document.getElementById("cfg-field-pass").value = "";
+    document.getElementById("cfg-field-pass2").value = "";
+
+    // Cerrar modal
+    document.querySelector(".modal-overlay.open")?.remove();
+
+    showToast("✓ Contraseña actualizada","success");
+
+  } catch(err){
+    showToast("Error: " + err.message,"error");
+  }
+}
+
+// Opcionalmente, agregar validación en tiempo real
+document.addEventListener("DOMContentLoaded", () => {
+  const passField = document.getElementById("cfg-field-pass");
+  if(passField){
+    passField.addEventListener("input", () => {
+      const val = passField.value;
+      const hint = document.createElement("span");
+      if(val.length >= 3){
+        hint.style.cssText = "color:var(--emerald);font-family:var(--mono);font-size:10px";
+        hint.textContent = "✓ Contraseña válida";
+      } else if(val.length > 0){
+        hint.style.cssText = "color:var(--rose);font-family:var(--mono);font-size:10px";
+        hint.textContent = "✗ Mínimo 3 caracteres";
+      }
+    });
+  }
+});
 
 // ── TOAST ──
 function showToast(msg, type="success"){
