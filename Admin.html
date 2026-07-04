@@ -2083,8 +2083,9 @@ function showToast(msg,type="ok"){
 // ══════════════════════════════════════════════════
 // NEXO IA — fix: llamada directa a OpenRouter con fallback
 // ══════════════════════════════════════════════════
+//const NEXO_API_KEY = "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";
+const NEXO_MODEL   = "cohere/north-mini-code:free";
 const NEXO_OR_KEY = "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";
-const NEXO_MODEL  = "meta-llama/llama-3.1-8b-instruct:free";
 let nexoOpen=false,nexoHistory=[],nexoTyping=false;
 
 function nexoBuildSystemPrompt(){
